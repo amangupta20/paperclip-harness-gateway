@@ -11,7 +11,7 @@
 //   GET  /<h>/v1/runs/:id                 {object:"hermes.run", status, output, usage, runtime, ...}
 //   GET  /<h>/v1/runs/:id/events          SSE: message.delta, reasoning.available, then run.<terminal>
 //   POST /<h>/v1/runs/:id/stop            {"status":"stopping"}; the run settles "cancelled"
-//   GET  /admin, /admin/api               ops view (any harness key)
+//   GET  /admin, /admin/api[/runs/:id]    ops view (any harness key, or none with BRIDGE_ADMIN_PUBLIC=1)
 //   POST /wake                            legacy "http" adapter, fire-and-forget on the claude harness
 //
 // Every /<h>/... route is also served under /<h>/api/... . Per-harness files live
@@ -47,6 +47,7 @@ const CONFIG = {
   maxQueued: Number(process.env.BRIDGE_MAX_QUEUED || 20), // waiting, per harness; beyond this: 429
   runTimeoutMs: Number(process.env.BRIDGE_RUN_TIMEOUT_MS || 60 * 60 * 1000),
   drainMs: Number(process.env.BRIDGE_DRAIN_MS || 20_000),
+  adminPublic: process.env.BRIDGE_ADMIN_PUBLIC === "1", // dashboard data without a key
   retainMs: 60 * 60 * 1000, // full in-memory event buffers; status snapshots persist 24h
 };
 CONFIG.extraDirs = CONFIG.extraDirs.filter((d) => d !== CONFIG.workspace);
@@ -654,7 +655,25 @@ async function handleHarness(req, res, harness, rest) {
 }
 
 function adminAuthorized(req) {
-  return Object.keys(RUNNERS).some((h) => authorized(req, h));
+  return CONFIG.adminPublic || Object.keys(RUNNERS).some((h) => authorized(req, h));
+}
+
+// One run's transcript as Paperclip saw it: the redacted event stream while it is
+// still buffered (retainMs after settling), otherwise just the final output.
+function adminRun(id) {
+  const live = runs.get(id);
+  const snap = live ? snapshot(live) : store.run(id);
+  if (!snap) throw new HttpError(404, "not_found", "run not found");
+  const transcript = [];
+  for (const { event, data } of live?.events || []) {
+    const kind = event === "message.delta" ? "text" : event === "reasoning.available" ? "reasoning" : "event";
+    const text = kind === "text" ? data.delta : kind === "reasoning" ? data.text : data.error || event;
+    const last = transcript.at(-1);
+    if (last && last.kind === kind && kind !== "event") last.text += text;
+    else transcript.push({ kind, text });
+  }
+  if (!transcript.length && snap.output) transcript.push({ kind: "text", text: snap.output });
+  return { ...snap, transcript_complete: Boolean(live), transcript };
 }
 
 function adminApi() {
@@ -668,6 +687,7 @@ function adminApi() {
       harness: r.harness,
       status: r.status,
       task_id: r.task_id,
+      session_id: r.session_id,
       started_at: r.started_at,
       duration_ms: r.started_at ? (r.finished_at || Date.now()) - r.started_at : null,
       cost_usd: r.cost_usd,
@@ -680,6 +700,7 @@ function adminApi() {
     running: live.filter((r) => r.status === "running" || r.status === "stopping").length,
     queued: live.filter((r) => r.status === "queued").length,
     draining,
+    key_required: !CONFIG.adminPublic,
     runs: rows,
     activity: activity.recent(100),
   };
@@ -703,6 +724,10 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && path === "/admin/api") {
       if (!adminAuthorized(req)) throw new HttpError(401, "unauthorized", "missing or invalid bearer token");
       return send(res, 200, adminApi());
+    }
+    if (req.method === "GET" && path.startsWith("/admin/api/runs/")) {
+      if (!adminAuthorized(req)) throw new HttpError(401, "unauthorized", "missing or invalid bearer token");
+      return send(res, 200, adminRun(decodeURIComponent(path.slice("/admin/api/runs/".length))));
     }
 
     if (req.method === "POST" && path === "/wake") {

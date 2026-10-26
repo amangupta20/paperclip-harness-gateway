@@ -111,6 +111,20 @@ test("create, stream and poll a run", async () => {
   assert.equal(s.body.runtime.model, "fake-1");
 });
 
+test("admin: data needs a key, run detail has the transcript", async () => {
+  assert.equal((await fetch(`${BASE}/admin/api`)).status, 401);
+  const d = await j("GET", "/admin/api");
+  assert.equal(d.body.key_required, true);
+  const run = d.body.runs.find((r) => r.status === "completed");
+  assert.equal(run.session_id, SK);
+  const r = await j("GET", `/admin/api/runs/${run.run_id}`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.transcript_complete, true);
+  assert.ok(r.body.transcript.some((t) => t.kind === "reasoning"));
+  assert.match(r.body.transcript.filter((t) => t.kind === "text").map((t) => t.text).join(""), /▸ Bash: ls -la/);
+  assert.equal((await j("GET", "/admin/api/runs/run_nope")).status, 404);
+});
+
 test("idempotent replay and conflict", async () => {
   const r = await create("THINK TOOL hello", {}, { "Idempotency-Key": "pc-1" });
   assert.equal(r.status, 202);

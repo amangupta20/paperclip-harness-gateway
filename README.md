@@ -38,7 +38,7 @@ NousResearch/hermes-agent) and on what Paperclip's `hermes_gateway` adapter read
 | `GET /<h>/v1/runs/:id` | bearer | `{object:"hermes.run", status, session_id, output, error, usage, cost_usd, runtime}` |
 | `GET /<h>/v1/runs/:id/events` | bearer | SSE `message.delta`, `reasoning.available`, then `run.completed\|failed\|cancelled\|interrupted` |
 | `POST /<h>/v1/runs/:id/stop` | bearer | `{"status":"stopping"}`; kills the process group, settles `cancelled` |
-| `GET /admin` (+ `/admin/api`) | page: none, data: any gateway key | live runs and activity |
+| `GET /admin` (+ `/admin/api`, `/admin/api/runs/:id`) | page: none, data: any gateway key (none with `BRIDGE_ADMIN_PUBLIC=1`) | live runs, activity, and each run's transcript |
 | `POST /wake` | claude key | legacy `http` adapter, fire-and-forget |
 
 Behaviour that matches Hermes:
@@ -139,6 +139,7 @@ commands on this machine.
 | `BRIDGE_MAX_CONCURRENCY` | `1` | running runs per harness |
 | `BRIDGE_MAX_QUEUED` | `20` | waiting runs per harness before 429 |
 | `BRIDGE_DRAIN_MS` | `20000` | shutdown grace before runs are interrupted |
+| `BRIDGE_ADMIN_PUBLIC` | — | `1` serves the `/admin` data without a key; only for a private bind such as a tailnet IP, since transcripts contain your task content |
 | `BRIDGE_RUN_TIMEOUT_MS` | `3600000` | the gateway's own hard limit |
 | `BRIDGE_<HARNESS>_MODEL` | — | e.g. `BRIDGE_PI_MODEL=opencode-go/kimi-k3` |
 | `CLAUDE_BIN` / `PI_BIN` / `CODEX_BIN` | on `PATH` | |
