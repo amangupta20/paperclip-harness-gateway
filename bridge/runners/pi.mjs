@@ -13,7 +13,14 @@ function uuidFrom(key) {
 export default {
   name: "pi",
   bin: process.env.PI_BIN || "pi",
+  provider: "pi",
   needsSkillPointer: true,
+  knownEvents: new Set([
+    "session", "agent_start", "agent_end", "agent_settled", "turn_start", "turn_end",
+    "message_start", "message_update", "message_end",
+    "tool_execution_start", "tool_execution_update", "tool_execution_end",
+    "auto_compaction_start", "auto_compaction_end", "auto_retry_start", "auto_retry_end",
+  ]),
 
   args({ prompt, sessionKey, model }) {
     const args = ["-p", "--mode", "json"];
@@ -31,13 +38,16 @@ export default {
     } else if (event.type === "message_end" && event.message?.role === "assistant") {
       const m = event.message;
       for (const block of m.content || []) {
-        if (block.type === "toolCall") out.delta(`\n▸ ${block.name}: ${summarizeInput(block.arguments)}\n`);
+        if (block.type === "thinking" && block.thinking) out.reasoning(block.thinking);
+        else if (block.type === "toolCall") out.tool(block.name, summarizeInput(block.arguments));
       }
-      out.model(m.model && m.provider ? `${m.provider}/${m.model}` : m.model);
+      out.model(m.model);
+      out.provider(m.provider);
       out.addUsage({
         input_tokens: m.usage?.input || 0,
-        cached_input_tokens: m.usage?.cacheRead || 0,
         output_tokens: m.usage?.output || 0,
+        cache_read_tokens: m.usage?.cacheRead || 0,
+        cache_write_tokens: m.usage?.cacheWrite || 0,
         cost_usd: m.usage?.cost?.total || 0,
       });
       const text = (m.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");

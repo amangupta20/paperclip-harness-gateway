@@ -1,0 +1,12 @@
+{
+  "name": "paperclip-harness-gateway",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Run Claude Code, pi and Codex as Paperclip agents via the hermes_gateway protocol",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node bridge/bridge.mjs",
+    "test": "node test/contract.mjs"
+  }
+}

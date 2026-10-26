@@ -25,21 +25,42 @@ the `claude` harness.
 
 ## Protocol
 
+Modelled on the real Hermes API server (`gateway/platforms/api_server.py` in
+NousResearch/hermes-agent) and on what Paperclip's `hermes_gateway` adapter reads.
+
 | Route (also under `/<h>/api/...`) | Auth | Behaviour |
 |---|---|---|
-| `HEAD *`, `GET /health` | none | liveness |
+| `GET /health`, `/v1/health`, `HEAD *` | none | `{"status":"ok"}` liveness |
 | `GET /<h>/health` | bearer | key check (Paperclip's Test Environment) |
-| `POST /<h>/v1/runs` | bearer | `{input, instructions, session_id}` → `{run_id}`; `Idempotency-Key` (= Paperclip run id) dedupes |
-| `GET /<h>/v1/runs/:id` | bearer | `{status, output, error, usage, cost_usd, model, session_id}` |
-| `GET /<h>/v1/runs/:id/events` | bearer | SSE: `message.delta` …, then `run.completed` / `run.failed` / `run.cancelled` |
-| `POST /<h>/v1/runs/:id/stop` | bearer | kills the run's whole process group, settles `cancelled` |
+| `GET /<h>/health/detailed` | bearer | readiness: credentials, workspace, skill, run counts, draining |
+| `GET /<h>/v1/models`, `/v1/capabilities` | bearer | discovery |
+| `POST /<h>/v1/runs` | bearer | `{input, instructions?, session_id?, conversation_history?, model?}` → `202 {run_id, status:"started"}` |
+| `GET /<h>/v1/runs/:id` | bearer | `{object:"hermes.run", status, session_id, output, error, usage, cost_usd, runtime}` |
+| `GET /<h>/v1/runs/:id/events` | bearer | SSE `message.delta`, `reasoning.available`, then `run.completed\|failed\|cancelled\|interrupted` |
+| `POST /<h>/v1/runs/:id/stop` | bearer | `{"status":"stopping"}`; kills the process group, settles `cancelled` |
+| `GET /admin` (+ `/admin/api`) | page: none, data: any gateway key | live runs and activity |
+| `POST /wake` | claude key | legacy `http` adapter, fire-and-forget |
 
-- Runs are serial per Paperclip session key (= per issue), with `BRIDGE_MAX_CONCURRENCY` (default 1) per harness.
-- The harness session for each session key is remembered (`--resume` for claude/codex, deterministic `--session-id` for pi), so an issue keeps its context across heartbeats.
-- Reconnecting SSE resumes from the last event delivered.
-- Only the terminal event carries `status`: Paperclip treats `status` in any event as terminal.
-- Runs that were active when the gateway restarted answer `failed` instead of 404, so Paperclip doesn't poll them until its timeout.
-- The claimed Paperclip key and the gateway key are redacted from transcripts and output.
+Behaviour that matches Hermes:
+- **Idempotency.** `Idempotency-Key` (Paperclip sends its run id) is kept on disk for 24h. An exact retry gets `202` with `Idempotency-Replayed: true` and the same `run_id`, even after a restart. A different body gets `409 idempotency_key_conflict`.
+- **Statuses.** `queued → running → (stopping →) completed | failed | cancelled | interrupted`. Terminal snapshots persist for 24h, so polling after a restart still answers.
+- **Shutdown drain.** On SIGTERM, new runs get `503 runtime_draining` with `Retry-After`, and in-flight runs carry `shutdown_requested_at`. After `BRIDGE_DRAIN_MS` they're recorded as `interrupted` and then killed. Runs found active at startup are also `interrupted`.
+- **Errors** use `{"error":{"code","message"}}`: `invalid_params` (400), `unauthorized` (401), `rate_limited` (429 once `BRIDGE_MAX_QUEUED` are waiting), `runtime_draining` (503).
+- **Usage** is reported under both Hermes names (`cache_read_tokens`, `cache_write_tokens`) and the name Paperclip reads (`cached_input_tokens`). `runtime` names the provider and model that actually served the run.
+
+Tuned for Paperclip's transcript view, which renders only `message.delta`, `reasoning.available` and `run.failed`. Everything else shows up as a bare "Hermes event: X" line:
+- Tool calls go inline in the delta text (`▸ Bash: …`) instead of as separate `tool.*` events.
+- Model thinking is sent as `reasoning.available`.
+- Token-by-token deltas (pi) are merged into ~250 ms chunks.
+- `run.failed` carries the exit reason plus the stderr tail.
+- Only terminal events carry `status`, because Paperclip treats `status` in any event as terminal.
+
+Other behaviour:
+- Runs are serial per session key (= per issue), with `BRIDGE_MAX_CONCURRENCY` (default 1) per harness.
+- Harness sessions are remembered per session key, so an issue keeps its context across heartbeats. A stale session falls back to a fresh one.
+- SSE reconnects resume from the last event delivered.
+- The claimed Paperclip key and the gateway key are redacted from all output.
+- Unknown CLI event types are logged once, so output-format drift is visible.
 
 ## Layout
 
@@ -52,6 +73,8 @@ the `claude` harness.
 | `bin/install-skill.sh [ref]` | fetch Paperclip's `paperclip` skill into `workspace/.claude/skills/` |
 | `bin/join.sh <harness> <invite-url>` | submit a `hermes_gateway` join request for one harness |
 | `bin/claim-api-key.sh <harness>` | claim and verify the API key after board approval |
+| `bridge/lib/store.mjs`, `bridge/lib/admin.mjs` | durable state; ops page |
+| `test/contract.mjs` | Hermes-contract tests against a real gateway process with a fake harness (`npm test`) |
 | `workspace/` | cwd for every run; `repos/` is where agents clone things |
 
 Secrets live outside the repo in `~/.paperclip/agents/<harness>/` (0600): `gateway-key`
@@ -92,7 +115,9 @@ commands on this machine.
 | `BRIDGE_BIND` / `BRIDGE_PORT` | `127.0.0.1` / `8787` | the service unit sets the bind |
 | `BRIDGE_WORKSPACE` | `./workspace` | cwd for runs; keep it stable so sessions resume |
 | `BRIDGE_EXTRA_DIRS` | `~/projects` | `:`-separated extra dirs |
-| `BRIDGE_MAX_CONCURRENCY` | `1` | per harness |
+| `BRIDGE_MAX_CONCURRENCY` | `1` | running runs per harness |
+| `BRIDGE_MAX_QUEUED` | `20` | waiting runs per harness before 429 |
+| `BRIDGE_DRAIN_MS` | `20000` | shutdown grace before runs are interrupted |
 | `BRIDGE_RUN_TIMEOUT_MS` | `3600000` | the gateway's own hard limit |
 | `BRIDGE_<HARNESS>_MODEL` | — | e.g. `BRIDGE_PI_MODEL=opencode-go/kimi-k3` |
 | `CLAUDE_BIN` / `PI_BIN` / `CODEX_BIN` | on `PATH` | |
@@ -101,9 +126,9 @@ commands on this machine.
 ## Adding a harness
 
 Drop `bridge/runners/<name>.mjs` exporting `{ name, bin, needsSkillPointer, args(opts), parse(event, out) }`
-and register it in `RUNNERS` in `bridge.mjs`. `args` gets `{prompt, resumeId, sessionKey, workspace, extraDirs, model}`.
+(plus `provider` and `knownEvents`) and register it in `RUNNERS` in `bridge.mjs`. `args` gets `{prompt, resumeId, sessionKey, workspace, extraDirs, model}`.
 `parse` receives each JSONL stdout line and calls `out.delta(text)`, `out.session(id)`, `out.model(m)`,
-`out.addUsage({...})`, `out.lastText(t)` and `out.result({isError, output, usage, costUsd})`.
+`out.tool(name, summary)`, `out.reasoning(text)`, `out.provider(p)`, `out.addUsage({...})`, `out.lastText(t)` and `out.result({isError, output, usage, costUsd})`.
 
-Status: claude and pi have been tested end to end against the protocol (create, replay, SSE, resume, stop, restart).
+Status: `npm test` covers the protocol (10 contract tests). claude and pi have also been run for real through it, including tool calls, reasoning and session resume.
 The codex runner follows `codex exec --json` but hasn't been run here yet.
