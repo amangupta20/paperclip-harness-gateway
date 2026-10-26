@@ -42,13 +42,15 @@ const CONFIG = {
   bind: process.env.BRIDGE_BIND || "127.0.0.1",
   port: Number(process.env.BRIDGE_PORT || 8787),
   workspace: resolve(process.env.BRIDGE_WORKSPACE || join(HERE, "..", "workspace")),
-  extraDirs: (process.env.BRIDGE_EXTRA_DIRS || join(homedir(), "projects")).split(":").filter(Boolean),
+  extraDirs: (process.env.BRIDGE_EXTRA_DIRS || join(homedir(), "projects")).split(":").filter(Boolean).map((d) => resolve(d)),
   maxConcurrency: Number(process.env.BRIDGE_MAX_CONCURRENCY || 1), // running, per harness
   maxQueued: Number(process.env.BRIDGE_MAX_QUEUED || 20), // waiting, per harness; beyond this: 429
   runTimeoutMs: Number(process.env.BRIDGE_RUN_TIMEOUT_MS || 60 * 60 * 1000),
   drainMs: Number(process.env.BRIDGE_DRAIN_MS || 20_000),
   retainMs: 60 * 60 * 1000, // full in-memory event buffers; status snapshots persist 24h
 };
+CONFIG.extraDirs = CONFIG.extraDirs.filter((d) => d !== CONFIG.workspace);
+CONFIG.cloneDir = resolve(process.env.BRIDGE_CLONE_DIR || join(CONFIG.workspace, "repos"));
 const skillPath = join(CONFIG.workspace, ".claude", "skills", "paperclip", "SKILL.md");
 const runsDir = join(HOME, "runs");
 mkdirSync(runsDir, { recursive: true, mode: 0o700 });
@@ -253,7 +255,7 @@ function runtimeNotes(runner) {
       ? [`- Paperclip skill: read ${skillPath} first and follow its heartbeat procedure; its scripts/ and references/ sit next to it.`]
       : ["- Use the `paperclip` skill and follow its heartbeat procedure."]),
     "- PAPERCLIP_API_URL, PAPERCLIP_API_KEY, PAPERCLIP_AGENT_ID, PAPERCLIP_COMPANY_ID and PAPERCLIP_RUN_ID are set in your environment. Never print the API key.",
-    `- Your scratch workspace is ${CONFIG.workspace}. The operator's repos live under ${CONFIG.extraDirs.join(", ")}; clone new repos into ${join(CONFIG.workspace, "repos")}.`,
+    `- Your workspace is ${CONFIG.workspace}.${CONFIG.extraDirs.length ? ` The operator's repos also live under ${CONFIG.extraDirs.join(", ")}.` : ""} Clone new repos into ${CONFIG.cloneDir}.`,
     "- No human is watching this session. Do not ask questions here; use Paperclip interactions for human input.",
   ].join("\n");
 }

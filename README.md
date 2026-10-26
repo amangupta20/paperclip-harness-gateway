@@ -70,12 +70,14 @@ Other behaviour:
 | `bridge/runners/{claude,pi,codex}.mjs` | per-harness argv + JSONL event parsing |
 | `bridge/paperclip-bridge.service` | systemd user unit template |
 | `bin/install-service.sh [bind]` | install/restart the service (binds to the Tailscale IPv4 by default) |
-| `bin/install-skill.sh [ref]` | fetch Paperclip's `paperclip` skill into `workspace/.claude/skills/` |
+| `bin/install-skill.sh [ref]` | fetch Paperclip's `paperclip` skill into `<workspace>/.claude/skills/` |
+| `bin/install-session-hook.sh [harness]` | make `claude` started in the workspace act as that agent (see below) |
+| `bin/session-env.sh [harness]` | the SessionStart hook it installs |
 | `bin/join.sh <harness> <invite-url>` | submit a `hermes_gateway` join request for one harness |
 | `bin/claim-api-key.sh <harness>` | claim and verify the API key after board approval |
 | `bridge/lib/store.mjs`, `bridge/lib/admin.mjs` | durable state; ops page |
 | `test/contract.mjs` | Hermes-contract tests against a real gateway process with a fake harness (`npm test`) |
-| `workspace/` | cwd for every run; `repos/` is where agents clone things |
+| `workspace/` | default cwd for every run (override with `BRIDGE_WORKSPACE`) |
 
 Secrets live outside the repo in `~/.paperclip/agents/<harness>/` (0600): `gateway-key`
 (the bearer Paperclip sends), `join-*.json`, `claim-response.json`, `credentials.json`.
@@ -84,6 +86,9 @@ Run logs are in `~/.paperclip/runs/`.
 ## Setup
 
 ```sh
+# optional: run agents somewhere other than ./workspace (the unit and bin/* read this file)
+printf 'BRIDGE_WORKSPACE=%s\nBRIDGE_CLONE_DIR=%s\n' ~/projects ~/projects > ~/.paperclip/gateway.env
+
 bin/install-skill.sh "$(curl -s https://<paperclip>/api/health | jq -r .commit)"
 bin/install-service.sh                      # tailnet-only by default
 sudo ufw allow in on tailscale0 to any port 8787 proto tcp   # if ufw is on
@@ -91,6 +96,7 @@ sudo ufw allow in on tailscale0 to any port 8787 proto tcp   # if ufw is on
 bin/join.sh claude https://<paperclip>/api/invites/<token>/onboarding.txt
 # … board approves in Paperclip …
 bin/claim-api-key.sh claude                 # picked up without a restart
+bin/install-session-hook.sh claude          # optional, see "Interactive sessions"
 ```
 
 `join.sh` registers `hermes_gateway` with `sessionKeyStrategy: issue`,
@@ -99,6 +105,20 @@ bin/claim-api-key.sh claude                 # picked up without a restart
 non-loopback hosts otherwise; over Tailscale the link is already WireGuard-encrypted.
 For TLS instead, front it with `tailscale serve` and set `BRIDGE_PUBLIC_URL`.
 The Paperclip host must be able to route to the gateway address.
+
+### Interactive sessions
+
+`bin/install-session-hook.sh claude` adds a SessionStart hook to
+`<workspace>/.claude/settings.json`. A `claude` you start yourself in the workspace then
+has the `paperclip` skill, `PAPERCLIP_API_URL`/`_API_KEY`/`_AGENT_ID`/`_COMPANY_ID`
+in its Bash env (via `$CLAUDE_ENV_FILE`, never printed), and a note saying which agent it
+is. It acts as that agent, so its writes show up in Paperclip as the agent's. With no
+heartbeat there's no `PAPERCLIP_RUN_ID`: the server accepts agent-key writes without
+`X-Paperclip-Run-Id`, but the skill's helper scripts refuse, so the session uses curl.
+Gateway runs already have the env, so the hook does nothing for them. Project skills
+and hooks don't reach sessions started in a subfolder, so with `BRIDGE_WORKSPACE=~/projects`
+a session in `~/projects/<repo>` is an ordinary one. Don't put a `CLAUDE.md` in the
+workspace for this: unlike skills and hooks, `CLAUDE.md` is loaded from parent directories.
 
 ### Permissions
 
@@ -114,14 +134,15 @@ commands on this machine.
 |---|---|---|
 | `BRIDGE_BIND` / `BRIDGE_PORT` | `127.0.0.1` / `8787` | the service unit sets the bind |
 | `BRIDGE_WORKSPACE` | `./workspace` | cwd for runs; keep it stable so sessions resume |
-| `BRIDGE_EXTRA_DIRS` | `~/projects` | `:`-separated extra dirs |
+| `BRIDGE_CLONE_DIR` | `<workspace>/repos` | where agents are told to clone new repos |
+| `BRIDGE_EXTRA_DIRS` | `~/projects` | `:`-separated extra dirs (the workspace itself is skipped) |
 | `BRIDGE_MAX_CONCURRENCY` | `1` | running runs per harness |
 | `BRIDGE_MAX_QUEUED` | `20` | waiting runs per harness before 429 |
 | `BRIDGE_DRAIN_MS` | `20000` | shutdown grace before runs are interrupted |
 | `BRIDGE_RUN_TIMEOUT_MS` | `3600000` | the gateway's own hard limit |
 | `BRIDGE_<HARNESS>_MODEL` | — | e.g. `BRIDGE_PI_MODEL=opencode-go/kimi-k3` |
 | `CLAUDE_BIN` / `PI_BIN` / `CODEX_BIN` | on `PATH` | |
-| `PAPERCLIP_HOME` | `~/.paperclip` | |
+| `PAPERCLIP_HOME` | `~/.paperclip` | `gateway.env` there is loaded by the unit and `bin/*` |
 
 ## Adding a harness
 

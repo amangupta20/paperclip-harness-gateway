@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Usage: bin/install-skill.sh [paperclip-git-ref]
 # Installs Paperclip's `paperclip` skill (SKILL.md + references/ + scripts/) into
-# workspace/.claude/skills/paperclip from github.com/paperclipai/paperclip.
+# <workspace>/.claude/skills/paperclip from github.com/paperclipai/paperclip.
 # Pass your server's commit (GET <paperclip>/api/health -> .commit) to match it.
 # Helper scripts missing at that ref are taken from master.
 
 set -euo pipefail
-root="$(cd "$(dirname "$0")/.." && pwd)"
+source "$(dirname "$0")/_env.sh"
 ref="${1:-master}"
-dest="$root/workspace/.claude/skills/paperclip"
+dest="$workspace/.claude/skills/paperclip"
 repo="paperclipai/paperclip"
 
 fetch() { gh api -H 'Accept: application/vnd.github.raw' "repos/$repo/contents/$1?ref=$2"; }

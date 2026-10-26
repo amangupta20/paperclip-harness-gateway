@@ -8,6 +8,8 @@ Type=simple
 ExecStart=@NODE@ @ROOT@/bridge/bridge.mjs
 Environment=PATH=@PATH@
 Environment=BRIDGE_BIND=@BIND@
+# BRIDGE_WORKSPACE, BRIDGE_CLONE_DIR, BRIDGE_<HARNESS>_MODEL, ...
+EnvironmentFile=-@HOME@/gateway.env
 # Binding to a tailnet IP fails until tailscale is up; keep retrying.
 Restart=always
 RestartSec=10
