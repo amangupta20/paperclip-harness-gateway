@@ -1,0 +1,168 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Semantic tokens; components use bg-surface, text-fg, border-line, etc. */
+:root {
+  --c-bg: #f7f7f8;
+  --c-surface: #ffffff;
+  --c-raised: #fbfbfc;
+  --c-sunken: #f1f1f3;
+  --c-line: #e6e6ea;
+  --c-line-strong: #d4d4da;
+  --c-fg: #18181b;
+  --c-fg-2: #3f3f46;
+  --c-mute: #71717a;
+  --c-faint: #a1a1aa;
+  --c-ok: #15803d;
+  --c-ok-bg: #dcfce7;
+  --c-bad: #c2261c;
+  --c-bad-bg: #fee4e2;
+  --c-warn: #a15c07;
+  --c-warn-bg: #fef0c7;
+  --c-info: #2459d6;
+  --c-info-bg: #e0eaff;
+  --c-claude: #c96442;
+  --c-pi: #7c4dde;
+  --c-codex: #0f8a6a;
+  --c-fake: #64748b;
+}
+.dark {
+  --c-bg: #0c0c0e;
+  --c-surface: #141417;
+  --c-raised: #18181c;
+  --c-sunken: #0f0f12;
+  --c-line: #26262b;
+  --c-line-strong: #34343a;
+  --c-fg: #ededf0;
+  --c-fg-2: #c9c9cf;
+  --c-mute: #8b8b94;
+  --c-faint: #5c5c64;
+  --c-ok: #4ade80;
+  --c-ok-bg: #0f2a19;
+  --c-bad: #ff8577;
+  --c-bad-bg: #3a1513;
+  --c-warn: #f5b84b;
+  --c-warn-bg: #33240a;
+  --c-info: #7ea6ff;
+  --c-info-bg: #142347;
+  --c-claude: #e08864;
+  --c-pi: #a586ff;
+  --c-codex: #3fcf9e;
+  --c-fake: #94a3b8;
+}
+
+@theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, monospace;
+  --color-bg: var(--c-bg);
+  --color-surface: var(--c-surface);
+  --color-raised: var(--c-raised);
+  --color-sunken: var(--c-sunken);
+  --color-line: var(--c-line);
+  --color-line-strong: var(--c-line-strong);
+  --color-fg: var(--c-fg);
+  --color-fg-2: var(--c-fg-2);
+  --color-mute: var(--c-mute);
+  --color-faint: var(--c-faint);
+  --color-ok: var(--c-ok);
+  --color-ok-bg: var(--c-ok-bg);
+  --color-bad: var(--c-bad);
+  --color-bad-bg: var(--c-bad-bg);
+  --color-warn: var(--c-warn);
+  --color-warn-bg: var(--c-warn-bg);
+  --color-info: var(--c-info);
+  --color-info-bg: var(--c-info-bg);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  @apply bg-bg text-fg font-sans antialiased;
+  font-feature-settings: "cv11", "ss01";
+  font-size: 14px;
+}
+::selection {
+  background: color-mix(in oklab, var(--accent, var(--c-info)) 30%, transparent);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--c-line-strong) transparent;
+}
+
+/* Assistant markdown */
+.md {
+  @apply prose prose-sm max-w-none dark:prose-invert;
+  --tw-prose-body: var(--c-fg-2);
+  --tw-prose-headings: var(--c-fg);
+  --tw-prose-bold: var(--c-fg);
+  --tw-prose-links: var(--accent, var(--c-info));
+  --tw-prose-code: var(--c-fg);
+  --tw-prose-bullets: var(--c-faint);
+  --tw-prose-hr: var(--c-line);
+  --tw-prose-th-borders: var(--c-line-strong);
+  --tw-prose-td-borders: var(--c-line);
+  --tw-prose-invert-body: var(--c-fg-2);
+  --tw-prose-invert-headings: var(--c-fg);
+  --tw-prose-invert-bold: var(--c-fg);
+  --tw-prose-invert-links: var(--accent, var(--c-info));
+  --tw-prose-invert-code: var(--c-fg);
+  --tw-prose-invert-bullets: var(--c-faint);
+  --tw-prose-invert-hr: var(--c-line);
+  line-height: 1.6;
+}
+.md :where(p, ul, ol, pre, table, blockquote):first-child {
+  margin-top: 0;
+}
+.md :where(p, ul, ol, pre, table, blockquote):last-child {
+  margin-bottom: 0;
+}
+.md code:not(pre code) {
+  @apply rounded bg-sunken px-1 py-0.5 font-mono text-[0.85em] font-normal;
+  border: 1px solid var(--c-line);
+}
+.md code:not(pre code)::before,
+.md code:not(pre code)::after {
+  content: none;
+}
+.md pre {
+  @apply rounded-lg border border-line bg-sunken font-mono text-[12.5px] leading-relaxed;
+  color: var(--c-fg-2);
+}
+.md table {
+  @apply text-[13px];
+}
+
+/* Live indicators */
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 45%, transparent); }
+  80%, 100% { box-shadow: 0 0 0 6px transparent; }
+}
+.live-dot {
+  animation: pulse-ring 1.6s ease-out infinite;
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.shimmer {
+  background: linear-gradient(90deg, var(--c-mute) 25%, var(--c-fg) 50%, var(--c-mute) 75%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2.2s linear infinite;
+}
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+.fade-in {
+  animation: fade-in 0.18s ease-out;
+}

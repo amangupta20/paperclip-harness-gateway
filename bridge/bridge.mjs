@@ -11,7 +11,7 @@
 //   GET  /<h>/v1/runs/:id                 {object:"hermes.run", status, output, usage, runtime, ...}
 //   GET  /<h>/v1/runs/:id/events          SSE: message.delta, reasoning.available, then run.<terminal>
 //   POST /<h>/v1/runs/:id/stop            {"status":"stopping"}; the run settles "cancelled"
-//   GET  /admin, /admin/api[/runs/:id]    ops view (any harness key, or none with BRIDGE_ADMIN_PUBLIC=1)
+//   GET  /admin, /admin/api/...           dashboard (lib/dashboard.mjs; any harness key, or none with BRIDGE_ADMIN_PUBLIC=1)
 //   POST /wake                            legacy "http" adapter, fire-and-forget on the claude harness
 //
 // Every /<h>/... route is also served under /<h>/api/... . Per-harness files live
@@ -28,7 +28,9 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { openStore } from "./lib/store.mjs";
-import { ADMIN_HTML, createActivity } from "./lib/admin.mjs";
+import { createActivity } from "./lib/activity.mjs";
+import { openHistory } from "./lib/history.mjs";
+import { createDashboard } from "./lib/dashboard.mjs";
 import claude from "./runners/claude.mjs";
 import pi from "./runners/pi.mjs";
 import codex from "./runners/codex.mjs";
@@ -57,6 +59,7 @@ const runsDir = join(HOME, "runs");
 mkdirSync(runsDir, { recursive: true, mode: 0o700 });
 
 const store = openStore(join(HOME, "bridge-state.json"));
+const history = openHistory(join(HOME, "history"), { days: Number(process.env.BRIDGE_HISTORY_DAYS || 30) });
 const activity = createActivity();
 const startedAt = Date.now();
 
@@ -94,6 +97,12 @@ function authorized(req, harness) {
   return got.length === want.length && timingSafeEqual(got, want);
 }
 
+// Keep the claimed key and gateway key out of anything handed back to Paperclip or shown.
+function redactorFor(harness, apiKey = loadCreds(harness)?.apiKey) {
+  const secrets = [apiKey, readGatewayKey(harness)].filter((s) => s && s.length >= 8);
+  return (s) => secrets.reduce((acc, sec) => acc.split(sec).join("[redacted]"), String(s ?? ""));
+}
+
 // ---------------------------------------------------------------------------
 // Runs. Statuses follow Hermes: queued → running → (stopping →) completed | failed | cancelled | interrupted.
 
@@ -115,6 +124,7 @@ function createRun({ harness, prompt, sessionKey, paperclipRunId, bodyHash, task
     status: "queued",
     createdAt: Date.now(),
     events: [],
+    parts: [{ kind: "prompt", text: redactorFor(harness)(prompt), ts: Date.now() }], // dashboard transcript
     delivered: 0, // events already sent over SSE; Paperclip reconnects without Last-Event-ID
     subscribers: new Set(),
     pendingDelta: "",
@@ -195,13 +205,26 @@ function flushDelta(run) {
   emit(run, "message.delta", { delta });
 }
 
+// Dashboard transcript: consecutive text or reasoning merges into one part.
+function addPart(run, kind, text, extra = {}) {
+  const last = run.parts.at(-1);
+  if ((kind === "text" || kind === "reasoning") && last?.kind === kind) last.text += text;
+  else run.parts.push({ kind, text, ts: Date.now(), ...extra });
+}
+
 function finish(run, status, error = null) {
   if (TERMINAL.has(run.status)) return;
   run.status = status;
   run.error = error;
   run.finishedAt = Date.now();
+  if (error) addPart(run, "error", error, { status });
   const snap = snapshot(run);
   store.settle(run.id, snap);
+  try {
+    history.save(snap, run.parts);
+  } catch (err) {
+    log(`history save for ${run.id} failed: ${err.message}`);
+  }
   emit(run, `run.${status}`, snap);
   for (const res of run.subscribers) res.end();
   run.subscribers.clear();
@@ -286,7 +309,7 @@ async function execute(run) {
   }
 
   if (run.sessionKey && run.harnessSessionId) store.setSession(run.harness, run.sessionKey, run.harnessSessionId);
-  if (run.status === "stopping") return finish(run, "cancelled", "Stopped by Paperclip.");
+  if (run.status === "stopping") return finish(run, "cancelled", run.stopReason || "Stopped by Paperclip.");
   if (TERMINAL.has(run.status)) return; // interrupted by shutdown
 
   const stderr = outcome.stderrTail.trim();
@@ -324,15 +347,24 @@ function spawnRunner(run, runner, { prompt, env, resumeId, logPath }) {
     const child = spawn(runner.bin, args, { cwd: CONFIG.workspace, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     run.child = child;
 
-    // Keep the claimed key and gateway key out of anything handed back to Paperclip.
-    const secrets = [env.PAPERCLIP_API_KEY, readGatewayKey(run.harness)].filter((s) => s && s.length >= 8);
-    const redact = (s) => secrets.reduce((acc, sec) => acc.split(sec).join("[redacted]"), String(s ?? ""));
+    const redact = redactorFor(run.harness, env.PAPERCLIP_API_KEY);
 
     const outcome = { code: null, timedOut: false, isError: false, gotResult: false, stderrTail: "" };
     const out = {
-      delta: (text) => text && queueDelta(run, redact(text)),
-      tool: (name, summary) => queueDelta(run, `\n▸ ${name}${summary ? `: ${redact(summary)}` : ""}\n`),
-      reasoning: (text) => text && emit(run, "reasoning.available", { text: redact(text) }),
+      delta: (text) => {
+        if (!text) return;
+        queueDelta(run, redact(text));
+        addPart(run, "text", redact(text));
+      },
+      tool: (name, summary) => {
+        queueDelta(run, `\n▸ ${name}${summary ? `: ${redact(summary)}` : ""}\n`);
+        addPart(run, "tool", summary ? redact(summary) : "", { name });
+      },
+      reasoning: (text) => {
+        if (!text) return;
+        emit(run, "reasoning.available", { text: redact(text) });
+        addPart(run, "reasoning", redact(text));
+      },
       session: (id) => id && (run.harnessSessionId = id),
       model: (m) => m && (run.model = m),
       provider: (p) => p && (run.provider = p),
@@ -654,81 +686,26 @@ async function handleHarness(req, res, harness, rest) {
   throw new HttpError(405, "method_not_allowed", "method not allowed");
 }
 
-function adminAuthorized(req) {
-  return CONFIG.adminPublic || Object.keys(RUNNERS).some((h) => authorized(req, h));
-}
-
-// One run's transcript as Paperclip saw it: the redacted event stream while it is
-// still buffered (retainMs after settling), otherwise just the final output.
-function adminRun(id) {
-  const live = runs.get(id);
-  const snap = live ? snapshot(live) : store.run(id);
-  if (!snap) throw new HttpError(404, "not_found", "run not found");
-  const transcript = [];
-  for (const { event, data } of live?.events || []) {
-    const kind = event === "message.delta" ? "text" : event === "reasoning.available" ? "reasoning" : "event";
-    const text = kind === "text" ? data.delta : kind === "reasoning" ? data.text : data.error || event;
-    const last = transcript.at(-1);
-    if (last && last.kind === kind && kind !== "event") last.text += text;
-    else transcript.push({ kind, text });
-  }
-  if (!transcript.length && snap.output) transcript.push({ kind: "text", text: snap.output });
-  return { ...snap, transcript_complete: Boolean(live), transcript };
-}
-
-function adminApi() {
-  const live = [...runs.values()];
-  const liveIds = new Set(live.map((r) => r.id));
-  const rows = [...live.map(snapshot), ...store.recentRuns(100).filter((r) => !liveIds.has(r.run_id))]
-    .sort((a, b) => (b.started_at || 0) - (a.started_at || 0))
-    .slice(0, 50)
-    .map((r) => ({
-      run_id: r.run_id,
-      harness: r.harness,
-      status: r.status,
-      task_id: r.task_id,
-      session_id: r.session_id,
-      started_at: r.started_at,
-      duration_ms: r.started_at ? (r.finished_at || Date.now()) - r.started_at : null,
-      cost_usd: r.cost_usd,
-      error: r.error,
-      output_tail: r.output ? r.output.slice(-200) : undefined,
-    }));
-  return {
-    uptime_ms: Date.now() - startedAt,
-    harnesses: Object.keys(RUNNERS),
-    running: live.filter((r) => r.status === "running" || r.status === "stopping").length,
-    queued: live.filter((r) => r.status === "queued").length,
-    draining,
-    key_required: !CONFIG.adminPublic,
-    runs: rows,
-    activity: activity.recent(100),
-  };
-}
+const dashboard = createDashboard({
+  root: join(HERE, ".."),
+  CONFIG, RUNNERS, TERMINAL, runs, snapshot, store, history, activity, startedAt,
+  loadCreds, agentDir, authorized, killRun, finish, log, HttpError, send,
+  isDraining: () => draining,
+});
 
 const SECURITY_HEADERS = { "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer" };
 
 const server = createServer(async (req, res) => {
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
   try {
-    const path = new URL(req.url, "http://x").pathname.replace(/\/+$/, "") || "/";
+    const url = new URL(req.url, "http://x");
+    const path = url.pathname.replace(/\/+$/, "") || "/";
 
     // Unauthenticated liveness: HEAD anywhere (http adapter's Test Environment), GET /health.
     if (req.method === "HEAD") return send(res, 200);
     if (req.method === "GET" && (path === "/health" || path === "/v1/health")) return send(res, 200, { status: "ok" });
 
-    if (req.method === "GET" && path === "/admin") {
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      return res.end(ADMIN_HTML);
-    }
-    if (req.method === "GET" && path === "/admin/api") {
-      if (!adminAuthorized(req)) throw new HttpError(401, "unauthorized", "missing or invalid bearer token");
-      return send(res, 200, adminApi());
-    }
-    if (req.method === "GET" && path.startsWith("/admin/api/runs/")) {
-      if (!adminAuthorized(req)) throw new HttpError(401, "unauthorized", "missing or invalid bearer token");
-      return send(res, 200, adminRun(decodeURIComponent(path.slice("/admin/api/runs/".length))));
-    }
+    if (dashboard(req, res, path, url)) return;
 
     if (req.method === "POST" && path === "/wake") {
       if (!authorized(req, "claude")) throw new HttpError(401, "unauthorized", "missing or invalid bearer token");

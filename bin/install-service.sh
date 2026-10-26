@@ -15,6 +15,11 @@ for bin in claude pi codex; do
 done
 path="$path:/usr/local/bin:/usr/bin:/bin"
 
+# The dashboard (ui/) is a Vite app; the gateway serves ui/dist at /admin.
+if command -v npm >/dev/null; then
+  (cd "$root/ui" && npm ci --no-audit --no-fund --loglevel=error && npm run build --silent) || echo "warning: dashboard build failed; /admin will say so" >&2
+fi
+
 unit="$HOME/.config/systemd/user/paperclip-bridge.service"
 mkdir -p "$(dirname "$unit")"
 sed -e "s|@NODE@|$node|" -e "s|@ROOT@|$root|" -e "s|@PATH@|$path|" -e "s|@BIND@|$bind|" -e "s|@HOME@|$PAPERCLIP_HOME|" \

@@ -111,17 +111,22 @@ test("create, stream and poll a run", async () => {
   assert.equal(s.body.runtime.model, "fake-1");
 });
 
-test("admin: data needs a key, run detail has the transcript", async () => {
-  assert.equal((await fetch(`${BASE}/admin/api`)).status, 401);
-  const d = await j("GET", "/admin/api");
-  assert.equal(d.body.key_required, true);
-  const run = d.body.runs.find((r) => r.status === "completed");
-  assert.equal(run.session_id, SK);
-  const r = await j("GET", `/admin/api/runs/${run.run_id}`);
-  assert.equal(r.status, 200);
-  assert.equal(r.body.transcript_complete, true);
-  assert.ok(r.body.transcript.some((t) => t.kind === "reasoning"));
-  assert.match(r.body.transcript.filter((t) => t.kind === "text").map((t) => t.text).join(""), /▸ Bash: ls -la/);
+test("dashboard: key-gated state, conversations and structured parts", async () => {
+  assert.equal((await fetch(`${BASE}/admin/api/state`)).status, 401);
+  assert.deepEqual((await (await fetch(`${BASE}/admin/api/auth`)).json()), { public: false, ok: false });
+  const { body: st } = await j("GET", "/admin/api/state");
+  const agent = st.agents.find((a) => a.harness === "fake");
+  assert.equal(agent.state, "hired");
+  assert.equal(agent.today.runs >= 1, true);
+  const t = st.threads.find((x) => x.key === SK);
+  assert.equal(t.issue.id, "ISS-1");
+  const { body: th } = await j("GET", `/admin/api/threads/fake/${encodeURIComponent(SK)}`);
+  const kinds = th.run_list[0].parts.map((p) => p.kind);
+  assert.deepEqual([...new Set(kinds)], ["prompt", "reasoning", "tool", "text"], kinds.join());
+  assert.equal(th.run_list[0].parts.find((p) => p.kind === "tool").name, "Bash");
+  const { body: tail } = await j("GET", `/admin/api/runs/${th.run_list[0].run_id}?from=2`);
+  assert.equal(tail.from, 2);
+  assert.equal(tail.parts.length, tail.total - 2);
   assert.equal((await j("GET", "/admin/api/runs/run_nope")).status, 404);
 });
 
@@ -152,6 +157,8 @@ test("secrets are redacted", async () => {
   const s = await waitFor(c.body.run_id, (b) => b.status === "completed");
   assert.ok(!JSON.stringify(s).includes(API_KEY));
   assert.match(s.output, /\[redacted\]/);
+  const { body: tail } = await j("GET", `/admin/api/runs/${c.body.run_id}`);
+  assert.ok(!JSON.stringify(tail).includes(API_KEY), "dashboard transcript is redacted");
 });
 
 test("failure carries the stderr tail", async () => {
@@ -206,6 +213,8 @@ test("restart: drained runs are interrupted, replay survives", async () => {
   const old = await j("GET", `/fake/v1/runs/${oldReplay.body.run_id}`);
   assert.equal(old.body.status, "completed", "settled runs from before the restart keep their status");
   assert.equal(old.body.usage.cached_input_tokens, 50);
+  const { body: th } = await j("GET", `/admin/api/threads/fake/${encodeURIComponent(SK)}`);
+  assert.ok(th.run_list[0].complete && th.run_list[0].parts.some((p) => p.kind === "tool"), "transcripts persist across restarts");
 });
 
 let failed = 0;

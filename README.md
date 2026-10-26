@@ -38,7 +38,7 @@ NousResearch/hermes-agent) and on what Paperclip's `hermes_gateway` adapter read
 | `GET /<h>/v1/runs/:id` | bearer | `{object:"hermes.run", status, session_id, output, error, usage, cost_usd, runtime}` |
 | `GET /<h>/v1/runs/:id/events` | bearer | SSE `message.delta`, `reasoning.available`, then `run.completed\|failed\|cancelled\|interrupted` |
 | `POST /<h>/v1/runs/:id/stop` | bearer | `{"status":"stopping"}`; kills the process group, settles `cancelled` |
-| `GET /admin` (+ `/admin/api`, `/admin/api/runs/:id`) | page: none, data: any gateway key (none with `BRIDGE_ADMIN_PUBLIC=1`) | live runs, activity, and each run's transcript |
+| `GET /admin` (+ `/admin/api/...`) | page: none, data: any gateway key (none with `BRIDGE_ADMIN_PUBLIC=1`) | the dashboard (see below) |
 | `POST /wake` | claude key | legacy `http` adapter, fire-and-forget |
 
 Behaviour that matches Hermes:
@@ -75,7 +75,8 @@ Other behaviour:
 | `bin/session-env.sh [harness]` | the SessionStart hook it installs |
 | `bin/join.sh <harness> <invite-url>` | submit a `hermes_gateway` join request for one harness |
 | `bin/claim-api-key.sh <harness>` | claim and verify the API key after board approval |
-| `bridge/lib/store.mjs`, `bridge/lib/admin.mjs` | durable state; ops page |
+| `bridge/lib/store.mjs`, `bridge/lib/history.mjs` | durable run state; dashboard transcripts |
+| `bridge/lib/dashboard.mjs`, `ui/` | dashboard API; the React app it serves (`ui/dist`) |
 | `test/contract.mjs` | Hermes-contract tests against a real gateway process with a fake harness (`npm test`) |
 | `workspace/` | default cwd for every run (override with `BRIDGE_WORKSPACE`) |
 
@@ -105,6 +106,27 @@ bin/install-session-hook.sh claude          # optional, see "Interactive session
 non-loopback hosts otherwise; over Tailscale the link is already WireGuard-encrypted.
 For TLS instead, front it with `tailscale serve` and set `BRIDGE_PUBLIC_URL`.
 The Paperclip host must be able to route to the gateway address.
+
+### Dashboard
+
+`http://<bind>:8787/admin` is a React app (Vite + Tailwind, in `ui/`) built by
+`bin/install-service.sh` (or `npm run build:ui`) and served from `ui/dist`. It has three views:
+
+- **Live:** one column per agent. Each shows its state (working, idle, awaiting approval,
+  not hired), today's and 7-day spend, a 14-day cost chart, its model, and the run in
+  progress streaming live, with Stop. Below that are its recent conversations.
+- **Conversations:** every Paperclip issue an agent has worked on is one thread (the
+  agent keeps its session per issue), with every run in order. Each run shows the wake
+  brief Paperclip sent, the agent's messages as Markdown, tool calls, collapsible
+  thinking, errors, cost and tokens, plus links to the issue and run in Paperclip.
+  Issue identifiers and titles are looked up with the agent's own Paperclip key. You can
+  search and filter by agent or status.
+- **Activity:** the gateway log.
+
+Transcripts are recorded as structured parts while a run streams (already redacted) and
+saved to `~/.paperclip/history/<run_id>.json` when it settles, kept `BRIDGE_HISTORY_DAYS`.
+Viewing needs any gateway key unless `BRIDGE_ADMIN_PUBLIC=1`. Stopping a run always needs
+that run's own harness key. `GATEWAY=http://host:8787 npm --prefix ui run dev` runs the UI with hot reload against a gateway.
 
 ### Interactive sessions
 
@@ -139,6 +161,7 @@ commands on this machine.
 | `BRIDGE_MAX_CONCURRENCY` | `1` | running runs per harness |
 | `BRIDGE_MAX_QUEUED` | `20` | waiting runs per harness before 429 |
 | `BRIDGE_DRAIN_MS` | `20000` | shutdown grace before runs are interrupted |
+| `BRIDGE_HISTORY_DAYS` | `30` | how long dashboard transcripts are kept |
 | `BRIDGE_ADMIN_PUBLIC` | — | `1` serves the `/admin` data without a key; only for a private bind such as a tailnet IP, since transcripts contain your task content |
 | `BRIDGE_RUN_TIMEOUT_MS` | `3600000` | the gateway's own hard limit |
 | `BRIDGE_<HARNESS>_MODEL` | — | e.g. `BRIDGE_PI_MODEL=opencode-go/kimi-k3` |
